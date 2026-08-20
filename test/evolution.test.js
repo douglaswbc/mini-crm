@@ -19,6 +19,7 @@ const { newDb } = require('pg-mem');
   const http = require('http');
   let lastCreate = null;
   let lastConnect = null;
+  const createdInstances = [];
   const mockEvo = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
@@ -31,7 +32,14 @@ const { newDb } = require('pg-mem');
       if (req.method === 'POST' && req.url === '/instance/create') {
         lastCreate = body;
         if (body.name === 'falha') return send(500, { message: 'erro simulado' });
+        createdInstances.push({ id: body.instanceId, name: body.name, token: body.token, webhook: '', jid: '', connected: false });
         return send(200, { hash: { id: body.instanceId, instanceId: body.instanceId } });
+      }
+      if (req.method === 'GET' && req.url === '/instance/all') {
+        return send(200, { success: true, instances: [
+          { id: '55555555-4444-3333-2222-111111111111', name: 'teste-manual', token: 'token-manual', webhook: '', jid: '', connected: false },
+          ...createdInstances,
+        ] });
       }
       if (req.method === 'POST' && req.url.startsWith('/instance/connect/')) {
         lastConnect = body;
@@ -155,6 +163,48 @@ const { newDb } = require('pg-mem');
   assert.strictEqual(st.instance.forward_url, 'http://localhost:3458/n8n/qualificador-leads');
   assert.ok(st.live && st.live.instance && st.live.instance.status === 'open', 'status live consultado');
   console.log('[ok] status + webhook_url');
+
+  // ---- Listar instâncias existentes na Evolution ----
+  r = await fetch(`${BASE}/api/whatsapp/instances`, { headers: { Authorization: `Bearer ${cliToken}` } });
+  assert.strictEqual(r.status, 200, 'listar instâncias');
+  const list = await r.json();
+  assert.ok(Array.isArray(list.instances) && list.instances.length >= 1, 'instâncias listadas');
+  assert.ok(list.instances.some((i) => i.instance_name === 'teste-manual' && i.instance_id === '55555555-4444-3333-2222-111111111111'), 'instância manual presente');
+  console.log('[ok] listar instâncias da Evolution');
+
+  // ---- Adotar uma instância criada manualmente no painel ----
+  r = await fetch(`${BASE}/api/whatsapp/adopt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cliToken}` },
+    body: JSON.stringify({ instance_id: '55555555-4444-3333-2222-111111111111' }),
+  });
+  assert.strictEqual(r.status, 200, 'adotar instância');
+  const adoptRes = await r.json();
+  assert.strictEqual(adoptRes.instance.instance_name, 'teste-manual');
+  assert.strictEqual(adoptRes.instance.instance_id, '55555555-4444-3333-2222-111111111111');
+  assert.strictEqual(adoptRes.instance.instance_token, 'token-manual');
+  assert.ok(waUuid, 'a instância criada antes continua existindo na Evolution');
+  console.log('[ok] adotar instância criada manualmente');
+
+  // ---- Adotar id inexistente => 404 ----
+  r = await fetch(`${BASE}/api/whatsapp/adopt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cliToken}` },
+    body: JSON.stringify({ instance_id: '00000000-0000-0000-0000-000000000000' }),
+  });
+  assert.strictEqual(r.status, 404, 'adotar id inexistente => 404');
+  console.log('[ok] adotar id inexistente => 404');
+
+  // ---- Volta a usar a instância criada pelo CRM (re-adota) ----
+  r = await fetch(`${BASE}/api/whatsapp/adopt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cliToken}` },
+    body: JSON.stringify({ instance_id: waUuid }),
+  });
+  assert.strictEqual(r.status, 200, 're-adotar instância criada pelo CRM');
+  const readopt = await r.json();
+  assert.strictEqual(readopt.instance.instance_id, waUuid);
+  console.log('[ok] re-adotar instância criada pelo CRM');
 
   const waItem = (over = {}) => ({
     body: {

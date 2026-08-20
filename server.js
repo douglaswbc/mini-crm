@@ -715,6 +715,54 @@ function waInstanceId(inst) {
   return (inst && (inst.instance_id || inst.instance_name)) || '';
 }
 
+// Normaliza a resposta de GET /instance/all (evolution-go) ou fetchInstances.
+function normalizeWaInstances(result) {
+  const arr = Array.isArray(result) ? result : (result && (result.instances || result.data)) || [];
+  return arr.map((i) => ({
+    instance_id: i.id || i.instanceId || '',
+    instance_name: i.name || i.instanceName || '',
+    token: i.token || '',
+    connected: Boolean(i.connected),
+    jid: i.jid || i.ownerJid || '',
+  }));
+}
+
+// Lista as instâncias já existentes na Evolution (para "adotar" uma criada
+// manualmente no painel, sem digitar ID/token).
+app.get('/api/whatsapp/instances', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  if (!evolutionConfigured()) {
+    return res.status(500).json({ error: 'Evolution API não configurada no servidor. Preencha EVOLUTION_BASE_URL e EVOLUTION_GLOBAL_API_KEY no .env.' });
+  }
+  const result = await callEvolutionSafe(res, () => callEvolution('GET', '/instance/all'));
+  if (result === undefined) return;
+  res.json({ instances: normalizeWaInstances(result) });
+});
+
+// Vincula ao tenant uma instância já existente na Evolution.
+app.post('/api/whatsapp/adopt', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  if (!evolutionConfigured()) {
+    return res.status(500).json({ error: 'Evolution API não configurada no servidor. Preencha EVOLUTION_BASE_URL e EVOLUTION_GLOBAL_API_KEY no .env.' });
+  }
+  const body = req.body || {};
+  if (!body.instance_id) return res.status(400).json({ error: 'Informe o instance_id.' });
+  const result = await callEvolutionSafe(res, () => callEvolution('GET', '/instance/all'));
+  if (result === undefined) return;
+  const found = normalizeWaInstances(result).find((i) => i.instance_id === body.instance_id);
+  if (!found) return res.status(404).json({ error: 'Instância não encontrada na Evolution.' });
+  await db.upsertWhatsappInstance({
+    tenantId,
+    instanceName: found.instance_name || null,
+    instanceToken: found.token || null,
+    instanceId: found.instance_id,
+    forwardUrl: body.forward_url || null,
+  });
+  res.json({ ok: true, instance: await db.getWhatsappInstanceByTenant(tenantId) });
+});
+
 // Cria a instância na Evolution e salva no tenant.
 // A Evolution usa instanceId (UUID) como identificador; "name" é o rótulo.
 app.post('/api/whatsapp/instance', requireSession, requireClientScope, async (req, res) => {

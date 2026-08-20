@@ -97,7 +97,9 @@ instância — o painel não pede ID/token.
 1. Na aba **WhatsApp** do painel (admin ou empresa), preencha o **nome da
    instância** (opcional) e a **URL de destino (forward)** — para enviar cada
    evento ao n8n, use `https://webhook.autofunil.com.br/webhook/qualificador-leads`.
-2. Clique em **Criar instância** (o CRM gera o UUID e o token, cria na Evolution).
+2. **Criar instância** (o CRM gera o UUID e o token, cria na Evolution) **ou**,
+   se você já criou no painel da Evolution, escolha a instância na lista
+   "Instâncias já existentes na Evolution" e clique em **Adotar**.
 3. Clique em **Conectar** — o webhook é apontado automaticamente para
    `<CRM_BASE_URL>/api/evolution/webhook`.
 4. Clique em **Ver QR Code** e escaneie no aparelho (WhatsApp → Dispositivos
@@ -140,6 +142,10 @@ da Evolution para ela (fire-and-forget). Mídia vira `[áudio]`, `[imagem]`,
 - `PUT /api/whatsapp` — salva nome/forward da instância.
 - `POST /api/whatsapp/instance` — cria a instância na Evolution (via
   credenciais do servidor).
+- `GET /api/whatsapp/instances` — lista as instâncias existentes na Evolution
+  (para adotar uma criada manualmente).
+- `POST /api/whatsapp/adopt` — vincula ao tenant uma instância existente
+  (busca id/token na Evolution, sem digitar no painel).
 - `POST /api/whatsapp/connect` — conecta e aponta o webhook para o CRM.
 - `GET /api/whatsapp/qr` — QR code para vincular o aparelho.
 - `POST /api/whatsapp/logout` — desconecta o aparelho.

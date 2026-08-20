@@ -655,6 +655,10 @@ async function renderWhatsApp(body, tenant) {
   body.appendChild(statusArea);
   body.appendChild(actions);
 
+  if (!inst) {
+    body.appendChild(await renderWaInstancesList(tenant));
+  }
+
   if (live && live.instance) {
     body.appendChild(el('div', { className: 'setup-hint', style: 'margin-top:12px', textContent: `Status Evolution: ${live.instance.status}${live.instance.ownerJid ? ' · número: ' + live.instance.ownerJid : ''}` }));
   }
@@ -729,6 +733,49 @@ async function deleteWaInstance(tenant) {
     const payload = user.role === 'admin' ? { tenant_id: tenant.id } : {};
     await api('/api/whatsapp/instance', { method: 'DELETE', body: JSON.stringify(payload) });
     waSetStatus('Instância excluída.');
+    renderWhatsApp($('#tabBody'), activeTenant);
+  } catch (e) { waSetStatus(e.message, true); }
+}
+
+// Lista as instâncias já existentes na Evolution para o tenant adotar uma.
+async function renderWaInstancesList(tenant) {
+  const panel = el('div', { className: 'panel', style: 'padding:16px;margin-top:12px' });
+  panel.appendChild(el('b', { textContent: 'Instâncias já existentes na Evolution' }));
+  panel.appendChild(el('div', { className: 'setup-hint', style: 'margin-top:6px', textContent: 'Se você criou a instância direto no painel da Evolution, escolha aqui e clique em "Adotar" — o CRM vincula automaticamente (sem digitar ID/token).' }));
+
+  let instances = [];
+  try {
+    const url = '/api/whatsapp/instances' + (user.role === 'admin' ? '?tenant_id=' + encodeURIComponent(tenant.id) : '');
+    instances = (await api(url)).instances || [];
+  } catch (e) {
+    panel.appendChild(el('div', { className: 'error-msg', textContent: 'Falha ao listar: ' + e.message }));
+    return panel;
+  }
+
+  if (!instances.length) {
+    panel.appendChild(el('div', { className: 'setup-hint', style: 'margin-top:8px', textContent: 'Nenhuma instância encontrada na Evolution. Clique em "Criar instância" acima para criar uma nova.' }));
+    return panel;
+  }
+
+  instances.forEach((inst) => {
+    const row = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)' }, [
+      el('div', { style: 'font-size:13px;line-height:1.6' }, [
+        el('b', { textContent: inst.instance_name || '(sem nome)' }),
+        el('div', { className: 'muted', textContent: (inst.connected ? 'conectado' : 'desconectado') + (inst.jid ? ' · ' + inst.jid : '') }),
+      ]),
+      el('button', { className: 'ghost', textContent: 'Adotar', onclick: () => adoptWaInstance(tenant, inst) }),
+    ]);
+    panel.appendChild(row);
+  });
+  return panel;
+}
+
+async function adoptWaInstance(tenant, inst) {
+  try {
+    const payload = { instance_id: inst.instance_id, forward_url: $('#waForwardUrl').value.trim() || null };
+    if (user.role === 'admin') payload.tenant_id = tenant.id;
+    await api('/api/whatsapp/adopt', { method: 'POST', body: JSON.stringify(payload) });
+    waSetStatus('Instância "' + (inst.instance_name || inst.instance_id) + '" vinculada. Clique em "Conectar" para apontar o webhook e depois em "Ver QR Code".');
     renderWhatsApp($('#tabBody'), activeTenant);
   } catch (e) { waSetStatus(e.message, true); }
 }
