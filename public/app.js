@@ -601,39 +601,34 @@ async function renderWhatsApp(body, tenant) {
   body.innerHTML = '<div class="empty-state">Carregando…</div>';
   const status = await api('/api/whatsapp/status' + tenantQuery());
   const inst = status.instance;
-  const live = status.live;
-
-  const stateBadge = !inst
-    ? '<span class="badge default">não criada</span>'
-    : (inst.connected || (live && live.instance && live.instance.status === 'open'))
-      ? '<span class="badge quente">conectado</span>'
-      : '<span class="badge morno">desconectado</span>';
 
   const box = el('div', { className: 'panel', style: 'padding:16px' }, [
     el('div', { style: 'font-size:13px;line-height:2' }, [
-      el('b', { textContent: 'Canal WhatsApp (Evolution API) · ' }),
-      el('span', { innerHTML: stateBadge }),
-      el('div', { textContent: `Instância: ${inst ? inst.instance_name : '—'}` }),
-      el('div', { textContent: `Número conectado: ${inst && inst.phone ? inst.phone : '—'}` }),
-      el('div', null, [
-        'URL do webhook (usar no connect): ',
-        el('code', { textContent: status.webhook_url || '(Evolution não configurada no servidor)' }),
+      el('b', { textContent: 'Canal WhatsApp (Evolution API)' }),
+      el('div', { style: 'margin-top:8px', textContent: 'Crie a instância no painel da Evolution e cadastre aqui o que o painel gerar. O CRM só recebe os eventos (webhook) e envia para a URL de destino.' }),
+      el('div', { style: 'margin-top:8px' }, [
+        'Webhook que a instância deve usar: ',
+        el('code', { textContent: status.webhook_url || '—' }),
       ]),
     ]),
   ]);
 
   const form = el('div', { className: 'panel', style: 'padding:16px;margin-top:12px' }, [
-    el('b', { textContent: 'Configuração da instância' }),
+    el('b', { textContent: 'Instância cadastrada no CRM' }),
     el('div', { className: 'form-row', style: 'margin-top:10px' }, [
-      el('label', { textContent: 'Nome da instância (opcional, ex.: automacao-rentavel)' }),
+      el('label', { textContent: 'Nome da instância (como criada na Evolution, ex.: automacao-rentavel)' }),
       el('input', { id: 'waInstanceName', value: (inst && inst.instance_name) || '', placeholder: 'automacao-rentavel' }),
     ]),
     el('div', { className: 'form-row' }, [
-      el('label', { textContent: 'Token da instância (opcional — gerado automaticamente ao criar)' }),
-      el('input', { id: 'waInstanceToken', value: (inst && inst.instance_token) || '', placeholder: 'deixe vazio para gerar' }),
+      el('label', { textContent: 'ID da instância (UUID gerado pelo painel da Evolution)' }),
+      el('input', { id: 'waInstanceId', value: (inst && inst.instance_id) || '', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' }),
     ]),
     el('div', { className: 'form-row' }, [
-      el('label', { textContent: 'URL de destino (forward) — envie cada evento para este webhook n8n' }),
+      el('label', { textContent: 'Token da instância (aparece ao criar no painel da Evolution)' }),
+      el('input', { id: 'waInstanceToken', value: (inst && inst.instance_token) || '', placeholder: 'token gerado pelo painel da Evolution' }),
+    ]),
+    el('div', { className: 'form-row' }, [
+      el('label', { textContent: 'URL de destino (forward) — cada evento chega aqui' }),
       el('input', { id: 'waForwardUrl', value: (inst && inst.forward_url) || '', placeholder: 'https://webhook.autofunil.com.br/webhook/qualificador-leads' }),
     ]),
   ]);
@@ -643,13 +638,8 @@ async function renderWhatsApp(body, tenant) {
   const btn = (label, fn, opts = {}) => el('button', { className: opts.primary ? 'primary' : 'ghost', textContent: label, onclick: fn });
 
   const actions = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px' }, [
-    btn('Salvar configuração', () => saveWaConfig(tenant), { primary: true }),
-    btn('Criar instância', () => createWaInstance(tenant)),
-    btn('Conectar (apontar webhook)', () => connectWa(tenant)),
-    btn('Ver QR Code', () => showWaQr(tenant)),
-    btn('Atualizar status', () => renderWhatsApp(body, tenant)),
-    btn('Desconectar', () => logoutWa(tenant)),
-    btn('Excluir instância', () => deleteWaInstance(tenant)),
+    btn('Salvar', () => saveWaConfig(tenant), { primary: true }),
+    btn('Excluir registro', () => deleteWaInstance(tenant)),
   ]);
 
   body.innerHTML = '';
@@ -657,18 +647,12 @@ async function renderWhatsApp(body, tenant) {
   body.appendChild(form);
   body.appendChild(statusArea);
   body.appendChild(actions);
-
-  if (live && live.instance) {
-    body.appendChild(el('div', { className: 'setup-hint', style: 'margin-top:12px', textContent: `Status Evolution: ${live.instance.status}${live.instance.ownerJid ? ' · número: ' + live.instance.ownerJid : ''}` }));
-  }
-  if (live && live.error) {
-    body.appendChild(el('div', { className: 'setup-hint', style: 'margin-top:12px', textContent: 'Falha ao consultar status na Evolution: ' + live.error }));
-  }
 }
 
 function waBody(tenant) {
   const payload = {
     instance_name: $('#waInstanceName').value.trim() || null,
+    instance_id: $('#waInstanceId').value.trim() || null,
     instance_token: $('#waInstanceToken').value.trim() || null,
     forward_url: $('#waForwardUrl').value.trim() || null,
   };
@@ -684,54 +668,17 @@ function waSetStatus(msg, isError) {
 async function saveWaConfig(tenant) {
   try {
     await api('/api/whatsapp', { method: 'PUT', body: JSON.stringify(waBody(tenant)) });
-    renderWhatsApp($('#tabBody'), activeTenant);
-  } catch (e) { waSetStatus(e.message, true); }
-}
-
-async function createWaInstance(tenant) {
-  try {
-    const r = await api('/api/whatsapp/instance', { method: 'POST', body: JSON.stringify(waBody(tenant)) });
-    waSetStatus('Instância criada: ' + ((r.instance && r.instance.instance_name) || '') + (r.evolution && r.evolution.error ? ' · aviso da Evolution: ' + r.evolution.error : ''));
-    renderWhatsApp($('#tabBody'), activeTenant);
-  } catch (e) { waSetStatus(e.message, true); }
-}
-
-async function connectWa(tenant) {
-  try {
-    await api('/api/whatsapp/connect', { method: 'POST', body: JSON.stringify(waBody(tenant)) });
-    waSetStatus('Webhook apontado para o CRM. Abra o WhatsApp no aparelho → Dispositivos vinculados → Escaneie o QR Code.');
-    renderWhatsApp($('#tabBody'), activeTenant);
-  } catch (e) { waSetStatus(e.message, true); }
-}
-
-async function showWaQr(tenant) {
-  try {
-    const url = '/api/whatsapp/qr' + (user.role === 'admin' ? '?tenant_id=' + encodeURIComponent(tenant.id) : '');
-    const r = await api(url);
-    const b64 = (r && r.qrcode && r.qrcode.base64) || (r && r.base64) || '';
-    if (!b64) { waSetStatus('Nenhum QR disponível agora. Instância criada? Conectada? (resposta: ' + JSON.stringify(r) + ')', true); return; }
-    const src = b64.startsWith('data:') ? b64 : 'data:image/png;base64,' + b64;
-    const img = el('img', { src, style: 'max-width:260px;border:1px solid var(--border);border-radius:8px;background:#fff' });
-    const holder = $('#waStatus');
-    if (holder) { holder.innerHTML = ''; holder.appendChild(img); }
-  } catch (e) { waSetStatus(e.message, true); }
-}
-
-async function logoutWa(tenant) {
-  try {
-    const payload = user.role === 'admin' ? { tenant_id: tenant.id } : {};
-    await api('/api/whatsapp/logout', { method: 'POST', body: JSON.stringify(payload) });
-    waSetStatus('Instância desconectada.');
+    waSetStatus('Instância salva no CRM. Confira no painel da Evolution se o webhook da instância é ' + location.origin + '/api/evolution/webhook.');
     renderWhatsApp($('#tabBody'), activeTenant);
   } catch (e) { waSetStatus(e.message, true); }
 }
 
 async function deleteWaInstance(tenant) {
-  if (!confirm('Excluir a instância e remover a configuração deste cliente?')) return;
+  if (!confirm('Excluir o registro da instância deste cliente? (a instância no painel da Evolution não é alterada)')) return;
   try {
     const payload = user.role === 'admin' ? { tenant_id: tenant.id } : {};
     await api('/api/whatsapp/instance', { method: 'DELETE', body: JSON.stringify(payload) });
-    waSetStatus('Instância excluída.');
+    waSetStatus('Registro excluído.');
     renderWhatsApp($('#tabBody'), activeTenant);
   } catch (e) { waSetStatus(e.message, true); }
 }
