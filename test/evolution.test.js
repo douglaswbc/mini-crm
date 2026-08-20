@@ -13,12 +13,46 @@ const { newDb } = require('pg-mem');
     return origRequire.apply(this, arguments);
   };
 
+  // Mock HTTP da Evolution: grava o body do /instance/create e responde 200
+  // (ou 500 quando o name for "falha", para testar o caminho de erro sem
+  // derrubar o servidor).
+  const http = require('http');
+  let lastCreate = null;
+  let lastConnect = null;
+  const mockEvo = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      const send = (status, obj) => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      if (req.method === 'POST' && req.url === '/instance/create') {
+        lastCreate = body;
+        if (body.name === 'falha') return send(500, { message: 'erro simulado' });
+        return send(200, { hash: { id: body.instanceId, instanceId: body.instanceId } });
+      }
+      if (req.method === 'POST' && req.url.startsWith('/instance/connect/')) {
+        lastConnect = body;
+        return send(200, { ok: true });
+      }
+      if (req.method === 'GET' && req.url.startsWith('/instance/status/')) {
+        return send(200, { instance: { status: 'open', ownerJid: '551199998888' } });
+      }
+      send(200, { ok: true });
+    });
+  });
+
   process.env.DATABASE_URL = 'postgres://user:pass@localhost/x';
   process.env.ENCRYPTION_KEY = 'integration-test-key-000000000000';
   process.env.ADMIN_PASSWORD = 'senha-admin-teste';
   process.env.IMPORT_LEGACY = 'false';
   process.env.PORT = '3458';
-  // Evolution NÃO configurada de propósito: cobre o caminho offline do painel
+  await new Promise((resolve) => mockEvo.listen(0, resolve));
+  process.env.EVOLUTION_BASE_URL = `http://127.0.0.1:${mockEvo.address().port}`;
+  process.env.EVOLUTION_GLOBAL_API_KEY = 'global-key-teste';
+  process.env.CRM_BASE_URL = 'http://localhost:3458';
 
   require('../server');
 
@@ -71,12 +105,53 @@ const { newDb } = require('pg-mem');
   r = await fetch(`${BASE}/api/whatsapp/status`, { headers: { Authorization: `Bearer ${cliToken}` } });
   assert.strictEqual(r.status, 200, 'status whatsapp');
   const st = await r.json();
-  assert.strictEqual(st.configured, false, 'evolution não configurada no servidor');
+  assert.strictEqual(st.configured, true, 'evolution configurada no servidor');
   assert.ok(st.webhook_url, 'webhook_url presente');
   assert.ok(st.webhook_url.includes('/api/evolution/webhook'), 'caminho do webhook');
   assert.strictEqual(st.instance.instance_token, 'token-teste');
   assert.strictEqual(st.instance.forward_url, 'http://localhost:3458/n8n/qualificador-leads');
   console.log('[ok] status (offline) + webhook_url');
+
+  // ---- Criar instância (mock da Evolution) => instanceId é UUID ----
+  r = await fetch(`${BASE}/api/whatsapp/instance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cliToken}` },
+    body: JSON.stringify({ instance_name: 'teste2', instance_token: 'token-teste', forward_url: 'http://localhost:3458/n8n' }),
+  });
+  assert.strictEqual(r.status, 200, 'criar instância');
+  const created = await r.json();
+  assert.ok(lastCreate, 'evolution recebeu o create');
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  assert.ok(uuidRe.test(lastCreate.instanceId), 'instanceId é UUID (' + lastCreate.instanceId + ')');
+  assert.strictEqual(lastCreate.name, 'teste2');
+  assert.ok(lastCreate.token, 'token gerado');
+  assert.strictEqual(created.instance.instance_id, lastCreate.instanceId, 'UUID salvo no banco');
+  console.log('[ok] criar instância (instanceId=UUID, name=teste2)');
+
+  // ---- Criação com a Evolution devolvendo erro => 502 JSON, servidor vivo ----
+  r = await fetch(`${BASE}/api/whatsapp/instance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cliToken}` },
+    body: JSON.stringify({ instance_name: 'falha', forward_url: 'http://localhost:3458/n8n' }),
+  });
+  assert.strictEqual(r.status, 502, 'evolution com erro => 502 JSON');
+  const createErr = await r.json();
+  assert.strictEqual(createErr.error, 'Evolution API: erro simulado');
+  r = await fetch(`${BASE}/health`);
+  assert.strictEqual(r.status, 200, 'servidor segue vivo após erro da evolution');
+  console.log('[ok] evolução com erro => 502 JSON sem derrubar o servidor');
+
+  // ---- Conectar => aponta o webhook do CRM ----
+  r = await fetch(`${BASE}/api/whatsapp/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cliToken}` },
+    body: JSON.stringify({}),
+  });
+  assert.strictEqual(r.status, 200, 'conectar instância');
+  assert.ok(lastConnect, 'evolution recebeu o connect');
+  assert.ok(Array.isArray(lastConnect.subscribe) && lastConnect.subscribe.includes('ALL'), 'subscribe ALL');
+  assert.ok(lastConnect.webhookUrl.includes('/api/evolution/webhook'), 'webhook aponta para o CRM');
+  console.log('[ok] conectar (subscribe ALL + webhook do CRM)');
 
   const waItem = (over = {}) => ({
     body: {
@@ -162,13 +237,13 @@ const { newDb } = require('pg-mem');
   // ---- Admin também gerencia a instância do tenant via escopo ----
   r = await fetch(`${BASE}/api/whatsapp/status?tenant_id=${tenant.id}`, { headers: { Authorization: `Bearer ${adminToken}` } });
   assert.strictEqual(r.status, 200, 'status como admin');
-  assert.strictEqual((await r.json()).instance.instance_name, 'wa_test');
+  assert.strictEqual((await r.json()).instance.instance_name, 'teste2');
   console.log('[ok] admin enxerga instância do tenant');
 
   // ---- Cliente não acessa instância de outro tenant (tenant_id ignorado) ----
   r = await fetch(`${BASE}/api/whatsapp/status?tenant_id=tenant_outro`, { headers: { Authorization: `Bearer ${cliToken}` } });
   const spoof = await r.json();
-  assert.strictEqual(spoof.instance.instance_name, 'wa_test', 'escopo do cliente forçado');
+  assert.strictEqual(spoof.instance.instance_name, 'teste2', 'escopo do cliente forçado');
   console.log('[ok] isolamento whatsapp entre tenants');
 
   console.log('\nTODOS OS TESTES DE WHATSAPP PASSARAM ✅');

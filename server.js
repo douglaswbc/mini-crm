@@ -683,7 +683,7 @@ app.get('/api/whatsapp/status', requireSession, requireClientScope, async (req, 
   let live = null;
   if (inst && inst.instance_token && inst.instance_name && evolutionConfigured()) {
     try {
-      live = await callEvolution('GET', `/instance/status/${inst.instance_name}`, { token: inst.instance_token });
+      live = await callEvolution('GET', `/instance/status/${waInstanceId(inst)}`, { token: inst.instance_token });
       if (live && live.instance) {
         await db.setWhatsappConnected(tenantId, live.instance.status === 'open', live.instance.ownerJid || null);
       }
@@ -707,7 +707,8 @@ app.put('/api/whatsapp', requireSession, requireClientScope, async (req, res) =>
   res.json({ ok: true, instance: saved });
 });
 
-// Cria a instância na Evolution e salva o token no tenant
+// Cria a instância na Evolution e salva o token no tenant.
+// A Evolution usa instanceId (UUID) como identificador; o "name" é o rótulo.
 app.post('/api/whatsapp/instance', requireSession, requireClientScope, async (req, res) => {
   const tenantId = scopedTenantId(req);
   if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
@@ -716,17 +717,22 @@ app.post('/api/whatsapp/instance', requireSession, requireClientScope, async (re
   }
   const body = req.body || {};
   const instanceName = (body.instance_name || 'wa_' + tenantId.replace(/[^a-z0-9]/gi, '').slice(0, 24)).toLowerCase();
+  const instanceId = crypto.randomUUID();
   const instanceToken = body.instance_token || crypto.randomBytes(16).toString('hex');
 
   const result = await callEvolutionSafe(res, () => callEvolution('POST', '/instance/create', {
-    body: { instanceId: instanceName, name: instanceName, token: instanceToken },
+    body: { instanceId, name: instanceName, token: instanceToken },
   }));
   if (result === undefined) return;
 
-  const instanceId = (result && (result.instance?.instanceName || result.hash?.instanceName)) || instanceName;
   await db.upsertWhatsappInstance({ tenantId, instanceName, instanceToken, instanceId, forwardUrl: body.forward_url || null });
   res.json({ ok: true, instance: await db.getWhatsappInstanceByTenant(tenantId), evolution: result });
 });
+
+// Identificador usado nas rotas da Evolution (instanceId é o UUID).
+function waInstanceId(inst) {
+  return (inst && (inst.instance_id || inst.instance_name)) || '';
+}
 
 // Conecta a instância e aponta o webhook para o CRM
 app.post('/api/whatsapp/connect', requireSession, requireClientScope, async (req, res) => {
@@ -736,7 +742,7 @@ app.post('/api/whatsapp/connect', requireSession, requireClientScope, async (req
   if (!inst || !inst.instance_token || !inst.instance_name) {
     return res.status(400).json({ error: 'Instância ainda não criada. Crie antes de conectar.' });
   }
-  const result = await callEvolutionSafe(res, () => callEvolution('POST', `/instance/connect/${inst.instance_name}`, {
+  const result = await callEvolutionSafe(res, () => callEvolution('POST', `/instance/connect/${waInstanceId(inst)}`, {
     token: inst.instance_token,
     body: { subscribe: ['ALL'], webhookUrl: evolutionWebhookUrl() },
   }));
@@ -751,7 +757,7 @@ app.get('/api/whatsapp/qr', requireSession, requireClientScope, async (req, res)
   if (!inst || !inst.instance_token || !inst.instance_name) {
     return res.status(400).json({ error: 'Instância ainda não criada.' });
   }
-  const result = await callEvolutionSafe(res, () => callEvolution('GET', `/instance/qr/${inst.instance_name}`, { token: inst.instance_token }));
+  const result = await callEvolutionSafe(res, () => callEvolution('GET', `/instance/qr/${waInstanceId(inst)}`, { token: inst.instance_token }));
   if (result === undefined) return;
   res.json(result);
 });
@@ -763,7 +769,7 @@ app.post('/api/whatsapp/logout', requireSession, requireClientScope, async (req,
   if (!inst || !inst.instance_token || !inst.instance_name) {
     return res.status(400).json({ error: 'Instância ainda não criada.' });
   }
-  const done = await callEvolutionSafe(res, () => callEvolution('DELETE', `/instance/logout/${inst.instance_name}`, { token: inst.instance_token }));
+  const done = await callEvolutionSafe(res, () => callEvolution('DELETE', `/instance/logout/${waInstanceId(inst)}`, { token: inst.instance_token }));
   if (done === undefined) return;
   await db.setWhatsappConnected(tenantId, false, null);
   res.json({ ok: true });
@@ -773,9 +779,9 @@ app.delete('/api/whatsapp/instance', requireSession, requireClientScope, async (
   const tenantId = scopedTenantId(req);
   if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
   const inst = await db.getWhatsappInstanceByTenant(tenantId);
-  if (inst && inst.instance_name && evolutionConfigured()) {
+  if (inst && waInstanceId(inst) && evolutionConfigured()) {
     try {
-      await callEvolution('DELETE', `/instance/delete/${inst.instance_name}`, { token: EVOLUTION_GLOBAL_API_KEY });
+      await callEvolution('DELETE', `/instance/delete/${waInstanceId(inst)}`, { token: EVOLUTION_GLOBAL_API_KEY });
     } catch (e) { /* segue mesmo se a instância já não existir */ }
   }
   await db.deleteWhatsappInstance(tenantId);
