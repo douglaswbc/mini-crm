@@ -18,10 +18,11 @@ precisa reescrever nenhum node**, só apontar as variáveis dos workflows para c
 - **Google Calendar por cliente**: cada cliente conecta a própria conta Google
   via OAuth2 e seleciona as agendas (calendarId) que os workflows devem usar.
   Os tokens ficam criptografados (AES-256) no banco.
-- **WhatsApp (Evolution API)**: cada cliente cadastra a própria instância
-  (criada no painel da Evolution) direto no painel e define uma URL de
-  *forward* (ex: webhook do n8n). Mensagens viram leads (`wa_<telefone>`) com a
-  timeline de conversa; mídia é guardada como descritor + URL (sem base64).
+- **WhatsApp (Evolution API)**: cada cliente cria a própria instância
+  (WhatsApp) direto do painel (o CRM usa as credenciais da Evolution do
+  servidor), aponta o webhook para o CRM e define uma URL de *forward* (ex:
+  webhook do n8n). Mensagens viram leads (`wa_<telefone>`) com a timeline de
+  conversa; mídia é guardada como descritor + URL (sem base64).
 - Import opcional do `db.json` legado na primeira subida.
 
 ---
@@ -89,19 +90,18 @@ os labels e use `ports: 3000:3000`.
 
 ## 5a. Canal WhatsApp (Evolution API)
 
-O CRM não conversa com a API da Evolution: a instância é criada e vinculada no
-**painel da Evolution** (na sua VPS, ex: `https://evogo.autofunil.com.br`), e o
-CRM apenas guarda a referência (CRUD local) e recebe os eventos via webhook.
+O CRM usa as credenciais da Evolution que ficam no `.env` do servidor
+(`EVOLUTION_BASE_URL` + `EVOLUTION_GLOBAL_API_KEY`) para criar e conectar a
+instância — o painel não pede ID/token.
 
-1. No painel da Evolution, **crie a instância** (nome, ex: `automacao-rentavel`)
-   e copie o **ID (UUID)** e o **token** gerados.
-2. Na aba **WhatsApp** do CRM (admin ou empresa), preencha: nome da instância,
-   ID (UUID), token e a **URL de destino (forward)** — para enviar cada evento
-   ao n8n, use `https://webhook.autofunil.com.br/webhook/qualificador-leads`.
-3. Clique em **Salvar**.
-4. No painel da Evolution, aponte o **webhook da instância** para
-   `<CRM_BASE_URL>/api/evolution/webhook` (o CRM mostra essa URL na aba) e
-   vincule o WhatsApp (QR Code) por lá.
+1. Na aba **WhatsApp** do painel (admin ou empresa), preencha o **nome da
+   instância** (opcional) e a **URL de destino (forward)** — para enviar cada
+   evento ao n8n, use `https://webhook.autofunil.com.br/webhook/qualificador-leads`.
+2. Clique em **Criar instância** (o CRM gera o UUID e o token, cria na Evolution).
+3. Clique em **Conectar** — o webhook é apontado automaticamente para
+   `<CRM_BASE_URL>/api/evolution/webhook`.
+4. Clique em **Ver QR Code** e escaneie no aparelho (WhatsApp → Dispositivos
+   vinculados). Quando conectar, o status mostra "conectado" e o número.
 
 Cada mensagem recebida cria/atualiza o lead `wa_<telefone>` (1 lead por
 contato, dedup por `mid`) e, se houver `forward_url`, reenvia o payload bruto
@@ -136,9 +136,14 @@ da Evolution para ela (fire-and-forget). Mídia vira `[áudio]`, `[imagem]`,
 
 - `POST /api/evolution/webhook` — webhook da Evolution (autentica pelo
   `instanceToken` da instância, sem precisar de header).
-- `GET /api/whatsapp/status` — webhook_url + instância cadastrada.
-- `PUT /api/whatsapp` — salva nome/ID/token/forward da instância.
-- `DELETE /api/whatsapp/instance` — remove o registro local.
+- `GET /api/whatsapp/status` — config do servidor + instância + status live.
+- `PUT /api/whatsapp` — salva nome/forward da instância.
+- `POST /api/whatsapp/instance` — cria a instância na Evolution (via
+  credenciais do servidor).
+- `POST /api/whatsapp/connect` — conecta e aponta o webhook para o CRM.
+- `GET /api/whatsapp/qr` — QR code para vincular o aparelho.
+- `POST /api/whatsapp/logout` — desconecta o aparelho.
+- `DELETE /api/whatsapp/instance` — exclui a instância (Evolution + registro).
 
 ## 7. Segurança
 
