@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Painel — Automação Rentável</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- LOGIN -->
+  <div class="login-screen" id="loginScreen">
+    <div class="login-card">
+      <h1>Painel de Operação</h1>
+      <p>Automação Rentável — mini-CRM</p>
+      <input type="text" id="loginUser" placeholder="Usuário" autocomplete="username" />
+      <input type="password" id="loginPassword" placeholder="Senha" autocomplete="current-password" />
+      <button class="primary" id="loginBtn" style="width:100%">Entrar</button>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </div>
+
+  <!-- APP -->
+  <div class="app" id="app">
+    <div class="sidebar">
+      <div>
+        <div class="brand">Automação<span>Rentável</span></div>
+        <div class="brand-sub" id="brandSub">Painel</div>
+      </div>
+      <div id="nav"></div>
+      <div class="sidebar-footer">
+        <div class="whoami" id="whoami"></div>
+        <button class="ghost logout-btn" id="logoutBtn">Sair</button>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="main-header">
+        <div>
+          <h2 id="pageTitle">Carregando…</h2>
+          <div class="sub" id="pageSub"></div>
+        </div>
+        <div id="pageActions"></div>
+      </div>
+      <div id="content"></div>
+    </div>
+  </div>
+
+  <!-- MODAL: novo cliente -->
+  <div class="modal-backdrop" id="tenantModal">
+    <div class="modal">
+      <h3 id="tenantModalTitle">Novo cliente</h3>
+      <label>Nome do negócio</label>
+      <input id="tenantFormNome" placeholder="Ex: Clínica Vitalis" />
+      <label>Valor médio da consulta/venda (R$) — opcional, usado nas métricas</label>
+      <input id="tenantFormValor" type="number" placeholder="Ex: 200" />
+      <div class="modal-actions">
+        <button class="ghost" id="cancelTenant">Cancelar</button>
+        <button class="primary" id="saveTenant">Salvar</button>
+      </div>
+      <div id="tenantResult"></div>
+    </div>
+  </div>
+
+  <!-- MODAL: usuário do cliente -->
+  <div class="modal-backdrop" id="userModal">
+    <div class="modal">
+      <h3 id="userModalTitle">Novo usuário</h3>
+      <label>Usuário (login)</label>
+      <input id="userFormUsername" placeholder="Ex: clinica.vitalis" autocomplete="off" />
+      <label>Senha</label>
+      <input id="userFormPassword" type="text" placeholder="Defina uma senha" autocomplete="off" />
+      <div class="modal-actions">
+        <button class="ghost" id="cancelUser">Cancelar</button>
+        <button class="primary" id="saveUser">Criar</button>
+      </div>
+      <div id="userResult"></div>
+    </div>
+  </div>
+
+  <!-- MODAL: ajuste de métricas -->
+  <div class="modal-backdrop" id="overrideModal">
+    <div class="modal">
+      <h3>Ajuste manual de métricas</h3>
+      <p class="modal-note">Usado quando a recepção confirma faltas/receita que o webhook não capturou.</p>
+      <label>Faltas de consulta (deixe vazio para manter automático)</label>
+      <input id="overrideFaltas" type="number" placeholder="Ex: 3" />
+      <label>Receita estimada (R$)</label>
+      <input id="overrideReceita" type="number" placeholder="Ex: 1500" />
+      <div class="modal-actions">
+        <button class="ghost" id="cancelOverride">Cancelar</button>
+        <button class="primary" id="saveOverride">Salvar</button>
+      </div>
+      <div id="overrideResult"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

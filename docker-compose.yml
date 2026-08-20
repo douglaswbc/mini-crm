@@ -1,0 +1,40 @@
+version: "3.8"
+
+# Sobe o mini-CRM na mesma VPS onde o n8n já roda (mesma rede DwbCNet).
+# O banco PostgreSQL é o mesmo servidor do stack n8n (host "postgres").
+# Antes da primeira subida, crie o banco dedicado:
+#   docker exec -it <container_do_postgres> psql -U postgres -c "CREATE DATABASE mini_crm;"
+# e aponte DATABASE_URL no .env para ele.
+
+services:
+  crm:
+    build: .
+    image: automacao-rentavel-crm:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    networks:
+      - DwbCNet
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.crm.rule=Host(`crm.autofunil.com.br`)   ## troque se preferir outro subdomínio
+        - traefik.http.routers.crm.entrypoints=websecure
+        - traefik.http.routers.crm.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.crm.service=crm
+        - traefik.http.services.crm.loadbalancer.server.port=3000
+        - traefik.http.services.crm.loadbalancer.passHostHeader=1
+
+# Sem Traefik: comente os "deploy.labels" acima e descomente:
+#   ports:
+#     - "3000:3000"
+
+networks:
+  DwbCNet:
+    external: true
+    name: DwbCNet   ## mesma rede do stack n8n

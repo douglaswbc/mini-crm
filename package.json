@@ -1,0 +1,21 @@
+{
+  "name": "automacao-rentavel-crm",
+  "version": "1.0.0",
+  "description": "Mini-CRM self-hosted para operar os workflows n8n do playbook Automação Rentável",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "googleapis": "^176.0.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.14"
+  }
+}
