@@ -94,9 +94,28 @@ async function boot() {
     } catch (e) {}
   }
   renderNav();
-  if (location.hash === '#/google-connected') {
-    showView('google', 'connected');
+  let googleConnected = false;
+  let googleTenantId = null;
+  if (location.hash.startsWith('#/google-connected')) {
+    googleConnected = true;
+    const qs = new URLSearchParams((location.hash.split('?')[1] || ''));
+    googleTenantId = qs.get('tenant');
+  }
+  if (googleConnected) {
     location.hash = '';
+    if (!activeTenant) {
+      if (user.role === 'admin') {
+        if (googleTenantId) activeTenant = tenants.find((t) => t.id === googleTenantId) || null;
+        if (!activeTenant) {
+          showView('tenants');
+          return;
+        }
+      } else {
+        showView('overview');
+        return;
+      }
+    }
+    showView('google', 'connected');
   } else {
     showView(user.role === 'admin' ? 'tenants' : 'overview');
   }
@@ -333,6 +352,11 @@ function showView(view, googleMsg) {
   }
   if (view === 'google') {
     if (user.role === 'admin') {
+      if (!activeTenant) {
+        $('#pageTitle').textContent = 'Sem dados';
+        $('#content').innerHTML = '<div class="panel"><div class="empty-state">Selecione um cliente para configurar o Google Calendar.</div></div>';
+        return;
+      }
       activeTab = 'google';
       renderTenantShell(activeTenant, googleMsg);
       return;

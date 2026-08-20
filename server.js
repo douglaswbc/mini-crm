@@ -541,7 +541,7 @@ app.get('/api/google/oauth/callback', async (req, res) => {
     }));
     await db.replaceCalendars(tenantId, calendars);
 
-    res.redirect('/#/google-connected');
+    res.redirect('/#/google-connected?tenant=' + encodeURIComponent(tenantId));
   } catch (e) {
     console.error('[google] Falha no callback:', e.message);
     res.send(`<html><body><h3>Falha ao conectar o Google: ${e.message}</h3></body></html>`);
