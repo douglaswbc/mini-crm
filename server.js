@@ -84,6 +84,19 @@ async function callEvolution(method, path, { token, body } = {}) {
   return json;
 }
 
+// Chamada à Evolution que nunca derruba o processo: em erro, responde 502
+// com JSON (o painel mostra a mensagem) e retorna undefined.
+async function callEvolutionSafe(res, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'Evolution API: ' + (e && e.message ? e.message : String(e)) });
+    }
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -705,9 +718,10 @@ app.post('/api/whatsapp/instance', requireSession, requireClientScope, async (re
   const instanceName = (body.instance_name || 'wa_' + tenantId.replace(/[^a-z0-9]/gi, '').slice(0, 24)).toLowerCase();
   const instanceToken = body.instance_token || crypto.randomBytes(16).toString('hex');
 
-  const result = await callEvolution('POST', '/instance/create', {
+  const result = await callEvolutionSafe(res, () => callEvolution('POST', '/instance/create', {
     body: { instanceId: instanceName, name: instanceName, token: instanceToken },
-  });
+  }));
+  if (result === undefined) return;
 
   const instanceId = (result && (result.instance?.instanceName || result.hash?.instanceName)) || instanceName;
   await db.upsertWhatsappInstance({ tenantId, instanceName, instanceToken, instanceId, forwardUrl: body.forward_url || null });
@@ -722,10 +736,11 @@ app.post('/api/whatsapp/connect', requireSession, requireClientScope, async (req
   if (!inst || !inst.instance_token || !inst.instance_name) {
     return res.status(400).json({ error: 'Instância ainda não criada. Crie antes de conectar.' });
   }
-  const result = await callEvolution('POST', `/instance/connect/${inst.instance_name}`, {
+  const result = await callEvolutionSafe(res, () => callEvolution('POST', `/instance/connect/${inst.instance_name}`, {
     token: inst.instance_token,
     body: { subscribe: ['ALL'], webhookUrl: evolutionWebhookUrl() },
-  });
+  }));
+  if (result === undefined) return;
   res.json({ ok: true, result });
 });
 
@@ -736,7 +751,8 @@ app.get('/api/whatsapp/qr', requireSession, requireClientScope, async (req, res)
   if (!inst || !inst.instance_token || !inst.instance_name) {
     return res.status(400).json({ error: 'Instância ainda não criada.' });
   }
-  const result = await callEvolution('GET', `/instance/qr/${inst.instance_name}`, { token: inst.instance_token });
+  const result = await callEvolutionSafe(res, () => callEvolution('GET', `/instance/qr/${inst.instance_name}`, { token: inst.instance_token }));
+  if (result === undefined) return;
   res.json(result);
 });
 
@@ -747,7 +763,8 @@ app.post('/api/whatsapp/logout', requireSession, requireClientScope, async (req,
   if (!inst || !inst.instance_token || !inst.instance_name) {
     return res.status(400).json({ error: 'Instância ainda não criada.' });
   }
-  await callEvolution('DELETE', `/instance/logout/${inst.instance_name}`, { token: inst.instance_token });
+  const done = await callEvolutionSafe(res, () => callEvolution('DELETE', `/instance/logout/${inst.instance_name}`, { token: inst.instance_token }));
+  if (done === undefined) return;
   await db.setWhatsappConnected(tenantId, false, null);
   res.json({ ok: true });
 });
