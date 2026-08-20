@@ -159,6 +159,19 @@ const MIGRATIONS = [
      UNIQUE (tenant_id, calendar_id)
    )`,
 
+  // whatsapp_instances: instância da Evolution API por tenant (1 por tenant)
+  `CREATE TABLE IF NOT EXISTS whatsapp_instances (
+     tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+     instance_name TEXT,
+     instance_token TEXT,
+     instance_id TEXT,
+     forward_url TEXT,
+     connected BOOLEAN DEFAULT false,
+     phone TEXT,
+     updated_at TIMESTAMPTZ DEFAULT now(),
+     created_at TIMESTAMPTZ DEFAULT now()
+   )`,
+
   // Índices para consultas por tenant
   `CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant_id)`,
   `CREATE INDEX IF NOT EXISTS idx_agenda_tenant ON agenda_events(tenant_id)`,
@@ -521,6 +534,55 @@ async function setCalendarSelected(tenantId, calendarId, selected) {
 }
 
 // ---------------------------------------------------------------------------
+// WhatsApp (Evolution API)
+// ---------------------------------------------------------------------------
+
+async function upsertWhatsappInstance({ tenantId, instanceName, instanceToken, instanceId, forwardUrl }) {
+  const { rows } = await pool.query(
+    `INSERT INTO whatsapp_instances (tenant_id, instance_name, instance_token, instance_id, forward_url, updated_at)
+     VALUES ($1, $2, $3, $4, $5, now())
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       instance_name = EXCLUDED.instance_name,
+       instance_token = EXCLUDED.instance_token,
+       instance_id = EXCLUDED.instance_id,
+       forward_url = EXCLUDED.forward_url,
+       updated_at = now()
+     RETURNING *`,
+    [tenantId, instanceName || null, instanceToken || null, instanceId || null, forwardUrl || null]
+  );
+  return rows[0];
+}
+
+async function getWhatsappInstanceByTenant(tenantId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM whatsapp_instances WHERE tenant_id = $1',
+    [tenantId]
+  );
+  return rows[0] || null;
+}
+
+async function getWhatsappInstanceByToken(token) {
+  const { rows } = await pool.query(
+    'SELECT * FROM whatsapp_instances WHERE instance_token = $1',
+    [token]
+  );
+  return rows[0] || null;
+}
+
+async function setWhatsappConnected(tenantId, connected, phone) {
+  await pool.query(
+    `UPDATE whatsapp_instances
+     SET connected = $2, phone = $3, updated_at = now()
+     WHERE tenant_id = $1`,
+    [tenantId, connected, phone || null]
+  );
+}
+
+async function deleteWhatsappInstance(tenantId) {
+  await pool.query('DELETE FROM whatsapp_instances WHERE tenant_id = $1', [tenantId]);
+}
+
+// ---------------------------------------------------------------------------
 // Import de dados do db.json antigo (opcional)
 // ---------------------------------------------------------------------------
 
@@ -588,5 +650,10 @@ module.exports = {
   replaceCalendars,
   listCalendars,
   setCalendarSelected,
+  upsertWhatsappInstance,
+  getWhatsappInstanceByTenant,
+  getWhatsappInstanceByToken,
+  setWhatsappConnected,
+  deleteWhatsappInstance,
   importLegacyJson,
 };

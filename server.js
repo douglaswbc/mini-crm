@@ -17,7 +17,7 @@ const db = require('./db');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use(express.static(require('path').join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
@@ -42,6 +42,46 @@ function googleOAuthClient(redirectUri = GOOGLE_REDIRECT_URI) {
 
 function oauthConfigured() {
   return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+}
+
+// Evolution API (WhatsApp) — servidor onde as instâncias são criadas
+// EVOLUTION_BASE_URL: ex "https://evogo.autofunil.com.br" (sem barra final)
+// EVOLUTION_GLOBAL_API_KEY: o "GLOBAL_API_KEY" da stack da Evolution
+// CRM_BASE_URL: domínio público do painel (usado como webhook da instância)
+const EVOLUTION_BASE_URL = (process.env.EVOLUTION_BASE_URL || '').replace(/\/+$/, '');
+const EVOLUTION_GLOBAL_API_KEY = process.env.EVOLUTION_GLOBAL_API_KEY || '';
+const CRM_BASE_URL = (process.env.CRM_BASE_URL || 'https://crm.autofunil.com.br').replace(/\/+$/, '');
+const EVOLUTION_WEBHOOK_PATH = '/api/evolution/webhook';
+
+function evolutionConfigured() {
+  return Boolean(EVOLUTION_BASE_URL && EVOLUTION_GLOBAL_API_KEY);
+}
+
+function evolutionWebhookUrl() {
+  // URL que a instância usa para mandar eventos -> aponta para o próprio CRM.
+  return `${CRM_BASE_URL}${EVOLUTION_WEBHOOK_PATH}`;
+}
+
+// Chama a API da Evolution (criação/status/qr/logout de instâncias).
+// "admin" usa a GLOBAL_API_KEY; "instance" usa o token da instância.
+async function callEvolution(method, path, { token, body } = {}) {
+  const apiKey = token || EVOLUTION_GLOBAL_API_KEY;
+  const res = await fetch(`${EVOLUTION_BASE_URL}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: apiKey,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch (e) { /* não-JSON */ }
+  if (!res.ok) {
+    const msg = json && (json.response?.message || json.message || json.error) || text || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return json;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +165,8 @@ async function requireTenant(req, res, next) {
 app.post('/api/leads', requireTenant, async (req, res) => {
   const body = req.body || {};
   const tenant = req.tenant;
-  const leadId = String(body.lead_id || newId('lead'));
+  const fallbackPhone = body.telefone ? 'wa_' + String(body.telefone).replace(/[^0-9]/g, '') : null;
+  const leadId = String(body.lead_id || fallbackPhone || newId('lead'));
   const existing = await db.getLead(tenant.id, leadId);
 
   const base = existing || {
@@ -206,6 +247,147 @@ app.post('/api/leads/update', requireTenant, async (req, res) => {
   }];
   const saved = await db.updateLeadFields(req.tenant.id, leadId, fields);
   res.json({ ok: true, lead: saved });
+});
+
+// ---------------------------------------------------------------------------
+// WhatsApp (Evolution API) — canal de entrada
+// ---------------------------------------------------------------------------
+
+function waPhoneFromJid(jid) {
+  if (!jid) return '';
+  return String(jid).split('@')[0].replace(/[^0-9]/g, '');
+}
+
+// Normaliza um item do webhook da Evolution API (v2) para o modelo de lead.
+// Estrutura recebida: [ { body: { data: { Info, Message }, event, instanceToken, ... } } ]
+function parseEvolutionMessage(item) {
+  const body = (item && item.body) || {};
+  const data = body.data || {};
+  const info = data.Info || {};
+
+  const event = body.event || '';
+  if (!['Message', 'Messages.Upsert'].includes(event)) return null;
+  if (info.IsFromMe || data.IsFromMe) return null;
+  if (info.IsGroup || data.IsGroup) return null;
+
+  const phone = waPhoneFromJid(info.Chat || info.Sender);
+  if (!phone) return null;
+
+  const msg = data.Message || {};
+  const mediaType = info.MediaType || '';
+  const timestamp = info.Timestamp || new Date().toISOString();
+
+  let tipo = 'texto';
+  let texto = '';
+  let url = null;
+  let mimetype = null;
+
+  if (typeof msg.conversation === 'string') {
+    texto = msg.conversation;
+  } else if (msg.audioMessage) {
+    tipo = 'audio';
+    mimetype = msg.audioMessage.mimetype || null;
+    url = msg.audioMessage.URL || null;
+    const secs = msg.audioMessage.seconds ? `${msg.audioMessage.seconds}s` : '';
+    texto = `[áudio${secs ? ' ' + secs : ''}]`;
+  } else if (msg.imageMessage) {
+    tipo = 'imagem';
+    mimetype = msg.imageMessage.mimetype || null;
+    url = msg.imageMessage.URL || null;
+    texto = '[imagem]';
+  } else if (msg.videoMessage) {
+    tipo = 'video';
+    mimetype = msg.videoMessage.mimetype || null;
+    url = msg.videoMessage.URL || null;
+    texto = '[vídeo]';
+  } else if (msg.documentMessage) {
+    tipo = 'documento';
+    mimetype = msg.documentMessage.mimetype || null;
+    url = msg.documentMessage.URL || null;
+    const nome = msg.documentMessage.fileName || '';
+    texto = `[documento${nome ? ': ' + nome : ''}]`;
+  } else if (msg.stickerMessage) {
+    tipo = 'figurinha';
+    url = msg.stickerMessage.URL || null;
+    texto = '[figurinha]';
+  } else {
+    tipo = mediaType || 'desconhecido';
+    texto = `[${tipo}]`;
+  }
+
+  return {
+    event,
+    mid: info.ID || null,
+    phone,
+    nome: info.PushName || '',
+    timestamp,
+    tipo,
+    texto,
+    url,
+    mimetype,
+  };
+}
+
+app.post(EVOLUTION_WEBHOOK_PATH, async (req, res) => {
+  const items = Array.isArray(req.body) ? req.body : [req.body];
+  for (const item of items) {
+    const body = (item && item.body) || {};
+    const instToken = body.instanceToken || '';
+    if (!instToken) continue;
+    const inst = await db.getWhatsappInstanceByToken(instToken);
+    if (!inst) continue;
+
+    const parsed = parseEvolutionMessage(item);
+    if (!parsed) continue;
+
+    const tenantId = inst.tenant_id;
+    const leadId = 'wa_' + parsed.phone;
+    const existing = await db.getLead(tenantId, leadId);
+
+    if (existing && (existing.timeline || []).some((t) => t.mid === parsed.mid)) continue;
+
+    const evento = {
+      evento: 'mensagem_recebida',
+      tipo: parsed.tipo,
+      texto: parsed.texto,
+      mid: parsed.mid,
+      ...(parsed.url ? { url: parsed.url } : {}),
+      em: parsed.timestamp,
+    };
+
+    let lead;
+    if (existing) {
+      existing.nome = parsed.nome || existing.nome;
+      existing.telefone = parsed.phone;
+      existing.origem = 'whatsapp';
+      existing.mensagem = parsed.texto;
+      lead = { ...existing, timeline: [evento] };
+    } else {
+      const tenant = await db.getTenantById(tenantId);
+      lead = {
+        id: newId('lead'),
+        lead_id: leadId,
+        nome: parsed.nome,
+        email: '', telefone: parsed.phone, empresa: '', origem: 'whatsapp',
+        mensagem: parsed.texto, classificacao: '', score: 0, motivo: '', proxima_acao: '',
+        status: 'novo', negocio: tenant ? tenant.negocio_nome : '',
+        recebido_em: new Date().toISOString(),
+        timeline: [evento],
+      };
+    }
+    // upsertLead concatena a timeline existente no banco com lead.timeline,
+    // então aqui só passamos o novo evento.
+    await db.upsertLead(tenantId, lead);
+
+    if (inst.forward_url) {
+      fetch(inst.forward_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+      }).catch(() => { /* fire-and-forget */ });
+    }
+  }
+  res.json({ ok: true });
 });
 
 app.post('/api/agenda/events', requireTenant, async (req, res) => {
@@ -473,6 +655,113 @@ app.patch('/admin/api/tenants/:id', requireSession, requireAdmin, async (req, re
 
 app.delete('/admin/api/tenants/:id', requireSession, requireAdmin, async (req, res) => {
   await db.deleteTenant(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// WhatsApp — configuração e gerenciamento de instância (Evolution API)
+// Escopo: admin age em qualquer tenant (?tenant_id); cliente apenas no dele.
+// ---------------------------------------------------------------------------
+
+app.get('/api/whatsapp/status', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  const inst = await db.getWhatsappInstanceByTenant(tenantId);
+  let live = null;
+  if (inst && inst.instance_token && inst.instance_name && evolutionConfigured()) {
+    try {
+      live = await callEvolution('GET', `/instance/status/${inst.instance_name}`, { token: inst.instance_token });
+      if (live && live.instance) {
+        await db.setWhatsappConnected(tenantId, live.instance.status === 'open', live.instance.ownerJid || null);
+      }
+    } catch (e) { live = { error: e.message }; }
+  }
+  const current = await db.getWhatsappInstanceByTenant(tenantId);
+  res.json({ configured: evolutionConfigured(), webhook_url: evolutionWebhookUrl(), instance: current, live });
+});
+
+app.put('/api/whatsapp', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  const body = req.body || {};
+  const saved = await db.upsertWhatsappInstance({
+    tenantId,
+    instanceName: body.instance_name || null,
+    instanceToken: body.instance_token || null,
+    instanceId: body.instance_id || null,
+    forwardUrl: body.forward_url || null,
+  });
+  res.json({ ok: true, instance: saved });
+});
+
+// Cria a instância na Evolution e salva o token no tenant
+app.post('/api/whatsapp/instance', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  if (!evolutionConfigured()) {
+    return res.status(500).json({ error: 'Evolution API não configurada no servidor. Preencha EVOLUTION_BASE_URL e EVOLUTION_GLOBAL_API_KEY no .env.' });
+  }
+  const body = req.body || {};
+  const instanceName = (body.instance_name || 'wa_' + tenantId.replace(/[^a-z0-9]/gi, '').slice(0, 24)).toLowerCase();
+  const instanceToken = body.instance_token || crypto.randomBytes(16).toString('hex');
+
+  const result = await callEvolution('POST', '/instance/create', {
+    body: { instanceId: instanceName, name: instanceName, token: instanceToken },
+  });
+
+  const instanceId = (result && (result.instance?.instanceName || result.hash?.instanceName)) || instanceName;
+  await db.upsertWhatsappInstance({ tenantId, instanceName, instanceToken, instanceId, forwardUrl: body.forward_url || null });
+  res.json({ ok: true, instance: await db.getWhatsappInstanceByTenant(tenantId), evolution: result });
+});
+
+// Conecta a instância e aponta o webhook para o CRM
+app.post('/api/whatsapp/connect', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  const inst = await db.getWhatsappInstanceByTenant(tenantId);
+  if (!inst || !inst.instance_token || !inst.instance_name) {
+    return res.status(400).json({ error: 'Instância ainda não criada. Crie antes de conectar.' });
+  }
+  const result = await callEvolution('POST', `/instance/connect/${inst.instance_name}`, {
+    token: inst.instance_token,
+    body: { subscribe: ['ALL'], webhookUrl: evolutionWebhookUrl() },
+  });
+  res.json({ ok: true, result });
+});
+
+app.get('/api/whatsapp/qr', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  const inst = await db.getWhatsappInstanceByTenant(tenantId);
+  if (!inst || !inst.instance_token || !inst.instance_name) {
+    return res.status(400).json({ error: 'Instância ainda não criada.' });
+  }
+  const result = await callEvolution('GET', `/instance/qr/${inst.instance_name}`, { token: inst.instance_token });
+  res.json(result);
+});
+
+app.post('/api/whatsapp/logout', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  const inst = await db.getWhatsappInstanceByTenant(tenantId);
+  if (!inst || !inst.instance_token || !inst.instance_name) {
+    return res.status(400).json({ error: 'Instância ainda não criada.' });
+  }
+  await callEvolution('DELETE', `/instance/logout/${inst.instance_name}`, { token: inst.instance_token });
+  await db.setWhatsappConnected(tenantId, false, null);
+  res.json({ ok: true });
+});
+
+app.delete('/api/whatsapp/instance', requireSession, requireClientScope, async (req, res) => {
+  const tenantId = scopedTenantId(req);
+  if (!tenantId) return res.status(400).json({ error: 'Tenant não informado ou sem acesso.' });
+  const inst = await db.getWhatsappInstanceByTenant(tenantId);
+  if (inst && inst.instance_name && evolutionConfigured()) {
+    try {
+      await callEvolution('DELETE', `/instance/delete/${inst.instance_name}`, { token: EVOLUTION_GLOBAL_API_KEY });
+    } catch (e) { /* segue mesmo se a instância já não existir */ }
+  }
+  await db.deleteWhatsappInstance(tenantId);
   res.json({ ok: true });
 });
 

@@ -18,6 +18,10 @@ precisa reescrever nenhum node**, só apontar as variáveis dos workflows para c
 - **Google Calendar por cliente**: cada cliente conecta a própria conta Google
   via OAuth2 e seleciona as agendas (calendarId) que os workflows devem usar.
   Os tokens ficam criptografados (AES-256) no banco.
+- **WhatsApp (Evolution API)**: cada cliente cria a própria instância
+  (WhatsApp) direto do painel, aponta o webhook para o CRM e define uma URL de
+  *forward* (ex: webhook do n8n). Mensagens viram leads (`wa_<telefone>`) com a
+  timeline de conversa; mídia é guardada como descritor + URL (sem base64).
 - Import opcional do `db.json` legado na primeira subida.
 
 ---
@@ -83,6 +87,26 @@ os labels e use `ports: 3000:3000`.
 5. Configure as variáveis dos workflows (veja aba "Configurar workflows" no
    painel do admin) apontando para este servidor com a API key do cliente.
 
+## 5a. Canal WhatsApp (Evolution API)
+
+Pré-requisito no servidor: subir a stack evolution-go (ex:
+`https://evogo.autofunil.com.br`) e preencher `EVOLUTION_BASE_URL` e
+`EVOLUTION_GLOBAL_API_KEY` no `.env`.
+
+1. Na aba **WhatsApp** do painel (admin ou empresa), preencha o **nome da
+   instância** e a **URL de destino (forward)** — para enviar cada evento ao
+   n8n, use `https://webhook.autofunil.com.br/webhook/qualificador-leads`.
+2. Clique em **Criar instância** (o CRM gera o token e cria na Evolution).
+3. Clique em **Conectar** — o webhook é apontado automaticamente para
+   `<CRM_BASE_URL>/api/evolution/webhook`.
+4. Clique em **Ver QR Code** e escaneie no aparelho (WhatsApp → Dispositivos
+   vinculados). Quando conectar, o status mostra "conectado" e o número.
+
+Cada mensagem recebida cria/atualiza o lead `wa_<telefone>` (1 lead por
+contato, dedup por `mid`) e, se houver `forward_url`, reenvia o payload bruto
+da Evolution para ela (fire-and-forget). Mídia vira `[áudio]`, `[imagem]`,
+`[vídeo]`, `[documento]` com URL no evento da timeline.
+
 ## 6. Endpoints
 
 **API pública (workflows n8n)** — header `Authorization: Bearer <api_key>`:
@@ -106,6 +130,18 @@ os labels e use `ports: 3000:3000`.
 - `GET /api/google/status` — situação da conexão + agendas salvas
 - `POST /api/google/calendars/:calendarId/select` — marca/desmarca agenda
 - `POST /api/google/disconnect` — desvincula a conta
+
+**WhatsApp (painel, escopado ao tenant da sessão; admin usa `?tenant_id=`)**:
+
+- `POST /api/evolution/webhook` — webhook da Evolution (autentica pelo
+  `instanceToken` da instância, sem precisar de header).
+- `GET /api/whatsapp/status` — config do servidor + instância + status live.
+- `PUT /api/whatsapp` — salva nome/token/forward da instância.
+- `POST /api/whatsapp/instance` — cria a instância na Evolution.
+- `POST /api/whatsapp/connect` — conecta e aponta o webhook para o CRM.
+- `GET /api/whatsapp/qr` — QR code para vincular o aparelho.
+- `POST /api/whatsapp/logout` — desconecta o aparelho.
+- `DELETE /api/whatsapp/instance` — exclui a instância (Evolution + registro).
 
 ## 7. Segurança
 
